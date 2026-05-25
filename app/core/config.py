@@ -17,31 +17,46 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
-    # DB
+    # DB — dev: sqlite:///./backend.db | Azure Postgres example:
+    # postgresql+psycopg2://USER:PASSWORD@HOST.postgres.database.azure.com:5432/DBNAME?sslmode=require
     DATABASE_URL: str = "sqlite:///./backend.db"
 
     # Admin bootstrap
     BOOTSTRAP_ADMIN_EMAIL: str = "varshithagovindaswamy@gmail.com"
     BOOTSTRAP_ADMIN_PASSWORD: str = "Admin@12345"
 
-    # SendGrid
-    SENDGRID_API_KEY: str = ""
-    EMAIL_FROM: str = "no-reply@maverick.local"
+    # Azure Communication Services — Email (replaces SendGrid)
+    # Portal: Communication Services resource → Keys → Connection string
+    ACS_EMAIL_CONNECTION_STRING: str = ""
+    # Verified MailFrom address for ACS Email (linked domain or *.azurecomm.net sandbox)
+    EMAIL_FROM: str = ""
 
     # Azure Blob Storage
     AZURE_STORAGE_CONNECTION_STRING: str = ""
     AZURE_STORAGE_CONTAINER: str = "certifications"
+
+    # AI provider: azure_openai | ollama
+    AI_ENABLED: bool = False
+    AI_PROVIDER: str = "azure_openai"
+    AI_REQUEST_TIMEOUT_SECONDS: int = 60
 
     # Azure OpenAI
     AZURE_OPENAI_ENDPOINT: str = ""
     AZURE_OPENAI_API_KEY: str = ""
     AZURE_OPENAI_API_VERSION: str = "2024-10-21"
     AZURE_OPENAI_DEPLOYMENT: str = "gpt-4o-mini"
-    AI_ENABLED: bool = False
+
+    # Ollama local runtime
+    OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
+    OLLAMA_MODEL: str = "llama3.1:8b"
 
     # Scheduler
     REMINDER_JOB_INTERVAL_MINUTES: int = 60
     OVERDUE_AFTER_DAYS: int = 14
+
+    # Voucher security (BRD)
+    # Provide any strong secret; it will be derived to a Fernet key.
+    VOUCHER_ENCRYPTION_KEY: str = ""
 
 
 settings = Settings()

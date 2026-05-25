@@ -8,7 +8,9 @@ from app.models.upload import UploadedFile, UploadPurpose
 from app.models.user import User, UserRole
 from app.models.enrollment import Enrollment
 from app.models.certification import Certification
+from app.models.notification import NotificationType
 from app.services.storage_service import upload_bytes
+from app.services.notification_service import create_notification
 
 
 router = APIRouter()
@@ -137,6 +139,28 @@ async def upload_my_file(
     return {"id": row.id, "blob_path": row.blob_path, "size_bytes": row.size_bytes, "sha256": row.sha256}
 
 
+from fastapi.responses import StreamingResponse
+
+@router.get("/{upload_id}/download")
+def download_file(upload_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    upload = db.query(UploadedFile).filter(UploadedFile.id == upload_id).first()
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    if user.role != UserRole.admin and upload.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+        
+    from app.services.storage_service import stream_blob
+    try:
+        chunks = stream_blob(upload.blob_path)
+        return StreamingResponse(
+            chunks, 
+            media_type=upload.content_type or "application/octet-stream",
+            headers={"Content-Disposition": f'inline; filename="{upload.original_filename}"'}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Failed to stream file from storage")
+
+
 @router.get("/", dependencies=[Depends(require_role(UserRole.admin))])
 def admin_uploads(db: Session = Depends(get_db), admin: User = Depends(require_role(UserRole.admin))):  # noqa: ARG001
     rows = db.query(UploadedFile).order_by(UploadedFile.created_at.desc()).limit(500).all()
@@ -150,7 +174,39 @@ def admin_uploads(db: Session = Depends(get_db), admin: User = Depends(require_r
             "blob_path": r.blob_path,
             "size_bytes": r.size_bytes,
             "created_at": r.created_at,
+            "status": "under_review",
+            "download_url": f"/api/v1/uploads/{r.id}/download",
         }
         for r in rows
     ]
+
+
+@router.post("/{upload_id}/review", dependencies=[Depends(require_role(UserRole.admin))])
+def review_upload(
+    upload_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_role(UserRole.admin)),
+):
+    row = db.query(UploadedFile).filter(UploadedFile.id == upload_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    decision = (payload.get("decision") or "").strip().lower()
+    reason = (payload.get("reason") or "").strip()
+    if decision not in {"approved", "rejected"}:
+        raise HTTPException(status_code=400, detail="decision must be approved or rejected")
+
+    title = "Document approved" if decision == "approved" else "Document rejected"
+    message = f"{row.original_filename} was {decision}."
+    if reason:
+        message += f" Reason: {reason}"
+    create_notification(
+        db,
+        user_id=row.user_id,
+        type=NotificationType.system,
+        title=title,
+        message=message,
+        link_url="/uploads",
+    )
+    return {"ok": True, "upload_id": row.id, "decision": decision, "reviewed_by": admin.email}
 

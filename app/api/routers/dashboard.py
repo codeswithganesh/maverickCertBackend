@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, and_, extract
 from sqlalchemy.orm import Session
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.core.deps import get_current_user
 from app.db.session import get_db
@@ -10,10 +10,206 @@ from app.models.task import Task, TaskStatus
 from app.models.upload import UploadedFile
 from app.models.user import User
 from app.models.certification import Certification
+from app.models.voucher import Voucher
+from app.models.notification import Notification
+from collections import defaultdict
 
 
 router = APIRouter()
 
+
+@router.get("/home")
+def home_overview(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    available = db.query(func.count(Certification.id)).scalar() or 0
+    enrolled = (
+        db.query(func.count(Enrollment.id))
+        .filter(Enrollment.user_id == user.id, Enrollment.status != EnrollmentStatus.saved_for_later)
+        .scalar()
+        or 0
+    )
+    completed_enrollments = (
+        db.query(func.count(Enrollment.id))
+        .filter(Enrollment.user_id == user.id, Enrollment.status == EnrollmentStatus.completed)
+        .scalar()
+        or 0
+    )
+    task_total = db.query(func.count(Task.id)).filter(Task.user_id == user.id).scalar() or 0
+    task_done = (
+        db.query(func.count(Task.id))
+        .filter(Task.user_id == user.id, Task.status == TaskStatus.done)
+        .scalar()
+        or 0
+    )
+    open_tasks = max(0, task_total - task_done)
+    completion_rate = round((task_done / task_total) * 100) if task_total else 0
+
+    notifications = (
+        db.query(Notification)
+        .filter(Notification.user_id == user.id)
+        .order_by(Notification.created_at.desc())
+        .limit(5)
+        .all()
+    )
+    recent_enrollments = (
+        db.query(Enrollment)
+        .filter(Enrollment.user_id == user.id)
+        .order_by(Enrollment.created_at.desc())
+        .limit(5)
+        .all()
+    )
+
+    activity = [
+        {
+            "type": "notification",
+            "title": n.title,
+            "message": n.message,
+            "content_format": n.content_format,
+            "created_at": n.created_at,
+            "link_url": n.link_url,
+        }
+        for n in notifications
+    ]
+    for enrollment in recent_enrollments:
+        cert = db.query(Certification).filter(Certification.id == enrollment.certification_id).first()
+        if cert:
+            activity.append(
+                {
+                    "type": "enrollment",
+                    "title": cert.title,
+                    "message": f"Enrollment status: {enrollment.status.value.replace('_', ' ')}",
+                    "created_at": enrollment.created_at,
+                    "link_url": f"/learning/{enrollment.id}",
+                }
+            )
+    activity = sorted(activity, key=lambda item: item["created_at"], reverse=True)[:6]
+
+    return {
+        "summary": {
+            "available": available,
+            "enrolled": enrolled,
+            "tasks": open_tasks,
+            "completion_rate": completion_rate,
+            "completed": completed_enrollments,
+        },
+        "quick_actions": [
+            {"label": "Browse certifications", "to": "/certifications"},
+            {"label": "Upload documents", "to": "/uploads"},
+            {"label": "View tasks", "to": "/tasks"},
+            {"label": "Open Power BI view", "to": "/dashboard"},
+        ],
+        "recent_activity": activity,
+        "getting_started": [
+            "Browse certifications and filter by category.",
+            "Use AI eligibility guidance before you enroll.",
+            "Enroll and complete the generated prerequisite tasks.",
+            "Upload required documents for admin review.",
+            "Wait for approval and voucher assignment.",
+            "Download voucher, take the exam, and track results.",
+        ],
+        "tool_stack": [
+            {"name": "Azure OpenAI", "area": "Eligibility explanations, task plans, certificate verification"},
+            {"name": "Power Apps", "area": "Low-code approval and mobile document intake workflow"},
+            {"name": "Power BI", "area": "Executive analytics for progress, success rate, voucher usage"},
+            {"name": "Azure Blob Storage", "area": "Document and certificate storage"},
+        ],
+    }
+
+
+@router.get("/heatmap")
+def get_activity_heatmap(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Get activity for the last 365 days for the contribution calendar"""
+    year_ago = datetime.now(timezone.utc) - timedelta(days=365)
+    
+    # Store aggregated activities by YYYY-MM-DD string
+    activity_map = defaultdict(list)
+    
+    # 1. Enrollments (Created)
+    enrollments = db.query(Enrollment).filter(
+        Enrollment.user_id == user.id,
+        Enrollment.created_at >= year_ago
+    ).all()
+    
+    for enr in enrollments:
+        c = db.query(Certification).filter(Certification.id == enr.certification_id).first()
+        if not c: continue
+        date_str = enr.created_at.strftime("%Y-%m-%d")
+        
+        # Determine specific action
+        action_text = "Started" if enr.status != EnrollmentStatus.saved_for_later else "Saved"
+        
+        activity_map[date_str].append({
+            "id": f"enr_{enr.id}",
+            "type": "enrollment",
+            "title": f"{action_text} {c.title}",
+            "time": enr.created_at.isoformat(),
+            "url": f"/learning/{enr.id}"
+        })
+        
+        # If completed, add an event for completion
+        if enr.status == EnrollmentStatus.completed and enr.updated_at and enr.updated_at >= year_ago:
+            completed_str = enr.updated_at.strftime("%Y-%m-%d")
+            activity_map[completed_str].append({
+                "id": f"comp_{enr.id}",
+                "type": "completion",
+                "title": f"Completed {c.title}!",
+                "time": enr.updated_at.isoformat(),
+                "url": "/certifications"
+            })
+            
+    # 2. Tasks (Completed)
+    completed_tasks = db.query(Task).filter(
+        Task.user_id == user.id,
+        Task.status == TaskStatus.done,
+        Task.updated_at >= year_ago
+    ).all()
+    
+    for task in completed_tasks:
+        if not task.updated_at: continue
+        date_str = task.updated_at.strftime("%Y-%m-%d")
+        activity_map[date_str].append({
+            "id": f"task_{task.id}",
+            "type": "task",
+            "title": f"Completed task: {task.title}",
+            "time": task.updated_at.isoformat(),
+            "url": f"/learning/{task.enrollment_id}" if task.enrollment_id else "/dashboard"
+        })
+        
+    # 3. Vouchers
+    vouchers = db.query(Voucher).filter(
+        Voucher.user_id == user.id,
+        Voucher.created_at >= year_ago
+    ).all()
+    
+    for v in vouchers:
+        date_str = v.created_at.strftime("%Y-%m-%d")
+        c = db.query(Certification).filter(Certification.id == v.certification_id).first() if v.certification_id else None
+        cert_title = c.title if c else "a certification"
+        activity_map[date_str].append({
+            "id": f"vouch_{v.id}",
+            "type": "voucher",
+            "title": f"Received voucher for {cert_title}",
+            "time": v.created_at.isoformat(),
+            "url": "/dashboard"
+        })
+        
+        # If redeemed
+        if v.status == "redeemed" and v.updated_at and v.updated_at >= year_ago:
+            red_str = v.updated_at.strftime("%Y-%m-%d")
+            activity_map[red_str].append({
+                "id": f"vouch_red_{v.id}",
+                "type": "voucher",
+                "title": f"Redeemed voucher for {cert_title}",
+                "time": v.updated_at.isoformat(),
+                "url": "/dashboard"
+            })
+            
+    # Sort activities within each day by time descending
+    for day in activity_map:
+        activity_map[day] = sorted(activity_map[day], key=lambda x: x["time"], reverse=True)
+            
+    return {
+        "heatmap": {k: v for k, v in activity_map.items()}
+    }
 
 @router.get("/me")
 def my_dashboard(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
@@ -96,11 +292,38 @@ def my_dashboard(db: Session = Depends(get_db), user: User = Depends(get_current
         .scalar() or 0
     )
 
+    # Current active certifications with progress
+    active_enrollments = (
+        db.query(Enrollment)
+        .filter(
+            Enrollment.user_id == user.id,
+            Enrollment.status.in_([EnrollmentStatus.selected, EnrollmentStatus.in_progress])
+        )
+        .order_by(Enrollment.updated_at.desc())
+        .limit(3)
+        .all()
+    )
+    
+    current_certs = []
+    for enr in active_enrollments:
+        c = db.query(Certification).filter(Certification.id == enr.certification_id).first()
+        if c:
+            current_certs.append({
+                "id": c.id,
+                "enrollment_id": enr.id,
+                "title": c.title,
+                "provider": c.provider,
+                "status": "In Progress" if enr.status == EnrollmentStatus.in_progress else "Enrolled",
+                "progress": enr.progress_percent or 0,
+                "target_completion_date": enr.target_completion_date,
+            })
+
     return {
         "user": {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role},
         "enrollments": {"total": enrollments_total, "active": enrollments_active},
         "tasks": {"total": tasks_total, "open": tasks_open, "completed": completed_tasks},
         "uploads": {"total": uploads_total},
+        "current_certifications": current_certs,
         "charts": {
             "certification_status": {
                 "completed": completed_certs,
