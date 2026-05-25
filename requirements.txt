@@ -16,4 +16,4 @@ azure-storage-blob==12.25.1
 openai==1.78.0
 httpx==0.28.1
 tenacity==9.1.2
-mcp-server==1.0.0
+mcp-server==0.1.4
