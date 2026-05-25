@@ -64,4 +64,11 @@ jobs:
           app-name: 'MaverickCertBackend'
           slot-name: 'Production'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_6691FD622EB4444CB379064C8430BF12 }}
-          startup-command: 'python -m uvicorn application:app --host 0.0.0.0 --port 8000'
+      
+      - name: 'Configure Startup Command'
+        uses: azure/appservice-settings@v1
+        with:
+          app-name: 'MaverickCertBackend'
+          app-settings-json: '[{"name": "SCM_COMMAND_TRIGGER_DEPLOYMENT", "value": "false"}, {"name": "STARTUP_COMMAND", "value": "python -m uvicorn application:app --host 0.0.0.0 --port 8000"}]'
+          general-settings-json: '{"startupCommand": "python -m uvicorn application:app --host 0.0.0.0 --port 8000"}'
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_6691FD622EB4444CB379064C8430BF12 }}
