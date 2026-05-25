@@ -64,3 +64,4 @@ jobs:
           app-name: 'MaverickCertBackend'
           slot-name: 'Production'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_6691FD622EB4444CB379064C8430BF12 }}
+          startup-command: 'python -m uvicorn application:app --host 0.0.0.0 --port 8000'
